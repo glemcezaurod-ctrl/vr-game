@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Glock VR Sim</title>
+    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        #ui { position: absolute; top: 10px; left: 10px; color: #0f0; z-index: 10; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; pointer-events: none; }
+        #start-btn { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); padding: 20px 40px; background: #222; color: #0f0; border: 2px solid #0f0; border-radius: 10px; cursor: pointer; z-index: 20; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        Статус: Жду запуска...<br>
+        Правая рука: ОК = Идти вперед<br>
+        Левая рука: ОК у пушки = Затвор
+    </div>
+
+    <button id="start-btn">ЗАПУСТИТЬ</button>
+
+    <a-scene embedded vr-mode-ui="enabled: false">
+        <a-assets>
+            <a-asset-item id="glock-model" src="https://vazgriz.com/gltf/glock.glb"></a-asset-item>
+        </a-assets>
+
+        <a-entity id="rig">
+            <a-entity id="camera" camera look-controls position="0 1.6 0">
+                
+                <a-entity id="gun-hand" position="0.3 -0.4 -0.6">
+                    <a-entity id="glock-ent" gltf-model="#glock-model" scale="0.15 0.15 0.15" rotation="0 180 0"></a-entity>
+                </a-entity>
+
+                <a-sphere id="left-dot" radius="0.03" color="yellow" position="0 0 -10"></a-sphere>
+
+            </a-entity>
+        </a-entity>
+
+        <a-grid material="color: #444; opacity: 0.5"></a-grid>
+        <a-sky color="#111"></a-sky>
+        <a-light type="ambient" intensity="0.7"></a-light>
+        <a-light type="directional" position="1 2 1"></a-light>
+    </a-scene>
+
+    <script>
+        const btn = document.getElementById('start-btn');
+        const ui = document.getElementById('ui');
+        const rig = document.getElementById('rig');
+        const cam = document.getElementById('camera');
+        const gunHand = document.getElementById('gun-hand');
+        const leftDot = document.getElementById('left-dot');
+        const glock = document.getElementById('glock-ent');
+
+        let isWalking = false;
+
+        // Инициализация MediaPipe
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6 });
+
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                ui.innerHTML = "Трекинг активен!<br>Держи руки перед камерой";
+
+                results.multiHandLandmarks.forEach((landmarks, index) => {
+                    const thumb = landmarks[4];
+                    const indexF = landmarks[8];
+                    const dist = Math.hypot(thumb.x - indexF.x, thumb.y - indexF.y);
+                    const okGesture = dist < 0.05;
+
+                    const x = (indexF.x - 0.5) * 2;
+                    const y = (0.5 - indexF.y) * 2;
+
+                    if (index === 0) { // Первая рука - правая
+                        gunHand.setAttribute('position', `${x} ${y - 0.3} -0.6`);
+                        isWalking = okGesture;
+                    } else { // Вторая рука - левая
+                        leftDot.setAttribute('position', `${x} ${y} -0.6`);
+                        const gunPos = gunHand.getAttribute('position');
+                        const toGun = Math.hypot(x - gunPos.x, y - gunPos.y);
+
+                        if (okGesture && toGun < 0.25) {
+                            glock.setAttribute('position', '0 0 -0.1'); // Затвор назад
+                        } else {
+                            glock.setAttribute('position', '0 0 0'); // Возвращаем
+                        }
+                    }
+                });
+            } else {
+                isWalking = false;
+                ui.innerText = "Руки не видны";
+            }
+        });
+
+        // Цикл движения
+        function update() {
+            if (isWalking) {
+                const dir = new THREE.Vector3();
+                cam.object3D.getWorldDirection(dir);
+                rig.object3D.position.addScaledVector(dir, -0.05);
+            }
+            requestAnimationFrame(update);
+        }
+
+        btn.onclick = async () => {
+            btn.style.display = 'none';
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+            const vid = document.createElement('video');
+            vid.srcObject = stream;
+            vid.play();
+
+            const cameraPipe = new Camera(vid, {
+                onFrame: async () => { await hands.send({image: vid}); },
+                width: 640, height: 480
+            });
+            cameraPipe.start();
+            update();
+
+            if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                DeviceOrientationEvent.requestPermission();
+            }
+        };
+
+        function Camera(video, options) {
+            this.start = () => {
+                setInterval(async () => {
+                    if (video.readyState >= 2) await options.onFrame();
+                }, 40);
+            };
+        }
+    </script>
+</body>
+</html>
