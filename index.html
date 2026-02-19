@@ -1,135 +1,157 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
     <meta charset="utf-8">
-    <title>Glock VR Sim</title>
-    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Glock VR - Spatial Room</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <style>
-        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
-        #ui { position: absolute; top: 10px; left: 10px; color: #0f0; z-index: 10; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; pointer-events: none; }
-        #start-btn { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); padding: 20px 40px; background: #222; color: #0f0; border: 2px solid #0f0; border-radius: 10px; cursor: pointer; z-index: 20; font-weight: bold; }
+        body { margin: 0; overflow: hidden; background: #000; display: flex; touch-action: none; }
+        #input_video { display: none; }
+        .eye { width: 50vw; height: 100vh; }
+        #ui { 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            z-index: 10000; background: #111; display: flex; 
+            flex-direction: column; justify-content: center; align-items: center; 
+            color: white; font-family: sans-serif; text-align: center; 
+        }
+        .btn { 
+            padding: 20px 50px; font-size: 1.5rem; border: none; 
+            border-radius: 10px; background: #0077ff; color: white; cursor: pointer; 
+        }
     </style>
 </head>
 <body>
 
     <div id="ui">
-        Статус: Жду запуска...<br>
-        Правая рука: ОК = Идти вперед<br>
-        Левая рука: ОК у пушки = Затвор
+        <h1>GLOCK VR: THE ROOM</h1>
+        <p>Включите автоповорот и держите телефон горизонтально.<br>Правая рука (ОК) - движение, Левая (ОК) - затвор.</p>
+        <button class="btn" id="start_btn">ВОЙТИ В СИСТЕМУ</button>
     </div>
 
-    <button id="start-btn">ЗАПУСТИТЬ</button>
-
-    <a-scene embedded vr-mode-ui="enabled: false">
-        <a-assets>
-            <a-asset-item id="glock-model" src="https://vazgriz.com/gltf/glock.glb"></a-asset-item>
-        </a-assets>
-
-        <a-entity id="rig">
-            <a-entity id="camera" camera look-controls position="0 1.6 0">
-                
-                <a-entity id="gun-hand" position="0.3 -0.4 -0.6">
-                    <a-entity id="glock-ent" gltf-model="#glock-model" scale="0.15 0.15 0.15" rotation="0 180 0"></a-entity>
-                </a-entity>
-
-                <a-sphere id="left-dot" radius="0.03" color="yellow" position="0 0 -10"></a-sphere>
-
-            </a-entity>
-        </a-entity>
-
-        <a-grid material="color: #444; opacity: 0.5"></a-grid>
-        <a-sky color="#111"></a-sky>
-        <a-light type="ambient" intensity="0.7"></a-light>
-        <a-light type="directional" position="1 2 1"></a-light>
-    </a-scene>
+    <video id="input_video" playsinline muted></video>
+    <div id="left" class="eye"></div>
+    <div id="right" class="eye"></div>
 
     <script>
-        const btn = document.getElementById('start-btn');
-        const ui = document.getElementById('ui');
-        const rig = document.getElementById('rig');
-        const cam = document.getElementById('camera');
-        const gunHand = document.getElementById('gun-hand');
-        const leftDot = document.getElementById('left-dot');
-        const glock = document.getElementById('glock-ent');
+        const videoElement = document.getElementById('input_video');
+        const eyeConfigs = [];
+        let currentYaw = 0, currentPitch = 0, walking = false;
+        const playerPos = new THREE.Vector3(0, 1.6, 0);
 
-        let isWalking = false;
+        function initEye(id, isRightEye) {
+            const container = document.getElementById(id);
+            const scene = new THREE.Scene();
+            
+            const camera = new THREE.PerspectiveCamera(75, (window.innerWidth/2)/window.innerHeight, 0.1, 100);
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth/2, window.innerHeight);
+            container.appendChild(renderer.domElement);
 
-        // Инициализация MediaPipe
-        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
-        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6 });
+            // --- КОМНАТА ---
+            const roomSize = 15;
+            const roomGeom = new THREE.BoxGeometry(roomSize, roomSize, roomSize);
+            const materials = [
+                new THREE.MeshStandardMaterial({ color: 0x333333, side: THREE.BackSide }), // право
+                new THREE.MeshStandardMaterial({ color: 0x333333, side: THREE.BackSide }), // лево
+                new THREE.MeshStandardMaterial({ color: 0x111111, side: THREE.BackSide }), // потолок
+                new THREE.MeshStandardMaterial({ color: 0x222222, side: THREE.BackSide }), // пол
+                new THREE.MeshStandardMaterial({ color: 0x444444, side: THREE.BackSide }), // перед
+                new THREE.MeshStandardMaterial({ color: 0x444444, side: THREE.BackSide })  // зад
+            ];
+            const room = new THREE.Mesh(roomGeom, materials);
+            room.position.y = roomSize / 2;
+            scene.add(room);
 
-        hands.onResults((results) => {
-            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                ui.innerHTML = "Трекинг активен!<br>Держи руки перед камерой";
+            // Ориентиры (колонны)
+            for(let i=0; i<6; i++) {
+                const col = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 5), new THREE.MeshStandardMaterial({color: 0x990000}));
+                const angle = (i / 6) * Math.PI * 2;
+                col.position.set(Math.cos(angle)*5, 2.5, Math.sin(angle)*5);
+                scene.add(col);
+            }
 
-                results.multiHandLandmarks.forEach((landmarks, index) => {
-                    const thumb = landmarks[4];
-                    const indexF = landmarks[8];
-                    const dist = Math.hypot(thumb.x - indexF.x, thumb.y - indexF.y);
-                    const okGesture = dist < 0.05;
+            scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+            const light = new THREE.PointLight(0xffffff, 0.7);
+            light.position.set(0, 5, 0);
+            scene.add(light);
 
-                    const x = (indexF.x - 0.5) * 2;
-                    const y = (0.5 - indexF.y) * 2;
+            // Модель пистолета (базовая геометрия)
+            const gunGroup = new THREE.Group();
+            scene.add(gunGroup);
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.1, 0.2), new THREE.MeshStandardMaterial({color: 0x151515}));
+            gunGroup.add(body);
+            const slide = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.04, 0.2), new THREE.MeshStandardMaterial({color: 0x252525}));
+            slide.position.y = 0.07;
+            gunGroup.add(slide);
 
-                    if (index === 0) { // Первая рука - правая
-                        gunHand.setAttribute('position', `${x} ${y - 0.3} -0.6`);
-                        isWalking = okGesture;
-                    } else { // Вторая рука - левая
-                        leftDot.setAttribute('position', `${x} ${y} -0.6`);
-                        const gunPos = gunHand.getAttribute('position');
-                        const toGun = Math.hypot(x - gunPos.x, y - gunPos.y);
+            return { scene, camera, renderer, gunGroup, slide };
+        }
 
-                        if (okGesture && toGun < 0.25) {
-                            glock.setAttribute('position', '0 0 -0.1'); // Затвор назад
-                        } else {
-                            glock.setAttribute('position', '0 0 0'); // Возвращаем
-                        }
+        eyeConfigs.push(initEye('left', false), initEye('right', true));
+
+        function onResults(results) {
+            const hands = results.multiHandLandmarks;
+            walking = false;
+
+            if (hands && hands.length > 0) {
+                hands.forEach((lm, index) => {
+                    const x = (lm[8].x - 0.5) * 2;
+                    const y = (0.5 - lm[8].y) * 2;
+                    const isOk = Math.hypot(lm[8].x - lm[4].x, lm[8].y - lm[4].y) < 0.05;
+
+                    if (index === 0) { // Ведущая рука (Пистолет)
+                        eyeConfigs.forEach(ec => {
+                            const handOffset = new THREE.Vector3(x + 0.3, y - 0.2, -0.6);
+                            handOffset.applyQuaternion(ec.camera.quaternion);
+                            ec.gunGroup.position.copy(ec.camera.position).add(handOffset);
+                            ec.gunGroup.quaternion.copy(ec.camera.quaternion);
+                        });
+                        if (isOk) walking = true;
+                    } else { // Левая рука (Взаимодействие)
+                        eyeConfigs.forEach(ec => {
+                            if (isOk) ec.slide.position.z = 0.06;
+                            else ec.slide.position.z = 0;
+                        });
                     }
                 });
-            } else {
-                isWalking = false;
-                ui.innerText = "Руки не видны";
             }
+
+            eyeConfigs.forEach((c, i) => {
+                c.camera.rotation.set(currentPitch, currentYaw, 0, 'YXZ');
+                if (walking) {
+                    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(c.camera.quaternion);
+                    playerPos.addScaledVector(dir, 0.06);
+                }
+                c.camera.position.copy(playerPos);
+                c.camera.position.x += (i === 0 ? -0.035 : 0.035); 
+                c.renderer.render(c.scene, c.camera);
+            });
+        }
+
+        const handsMP = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+        handsMP.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6 });
+        handsMP.onResults(onResults);
+
+        const cameraHelper = new Camera(videoElement, {
+            onFrame: async () => { await handsMP.send({image: videoElement}); },
+            facingMode: 'environment', width: 640, height: 480
         });
 
-        // Цикл движения
-        function update() {
-            if (isWalking) {
-                const dir = new THREE.Vector3();
-                cam.object3D.getWorldDirection(dir);
-                rig.object3D.position.addScaledVector(dir, -0.05);
+        document.getElementById('start_btn').onclick = async () => {
+            if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                await DeviceOrientationEvent.requestPermission();
             }
-            requestAnimationFrame(update);
-        }
-
-        btn.onclick = async () => {
-            btn.style.display = 'none';
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-            const vid = document.createElement('video');
-            vid.srcObject = stream;
-            vid.play();
-
-            const cameraPipe = new Camera(vid, {
-                onFrame: async () => { await hands.send({image: vid}); },
-                width: 640, height: 480
-            });
-            cameraPipe.start();
-            update();
-
-            if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-                DeviceOrientationEvent.requestPermission();
-            }
+            window.addEventListener('deviceorientation', (e) => {
+                currentYaw = THREE.MathUtils.degToRad(e.alpha || 0);
+                currentPitch = THREE.MathUtils.degToRad((e.beta || 90) - 90);
+            }, true);
+            
+            await cameraHelper.start();
+            document.getElementById('ui').style.display = 'none';
         };
-
-        function Camera(video, options) {
-            this.start = () => {
-                setInterval(async () => {
-                    if (video.readyState >= 2) await options.onFrame();
-                }, 40);
-            };
-        }
     </script>
 </body>
 </html>
